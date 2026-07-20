@@ -1,1 +1,7 @@
 .idea
+__pycache__/
+mihomo
+mihomo.gz
+mihomo.zip
+mihomo-bin/
+rules/

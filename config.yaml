@@ -1,3 +1,8 @@
+output:
+  txt_path: rules/ads.txt
+  mrs_path: rules/ads.mrs
+  metadata_path: rules/metadata.json
+
 rules:
   AWAvenue:
     type: adguard

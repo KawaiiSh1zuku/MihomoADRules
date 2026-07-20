@@ -1,0 +1,93 @@
+name: Build Mihomo Rules
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 2 * * *"
+  push:
+    paths:
+      - config.yaml
+      - main.py
+      - tests/**
+      - .github/workflows/build-mrs.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-mihomo-rules
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run Tests
+        run: python -m unittest discover -s tests -v
+
+      - name: Download Mihomo
+        run: |
+          python - <<'PY'
+          import gzip
+          import json
+          import os
+          import shutil
+          import stat
+          import urllib.request
+
+          api_url = "https://api.github.com/repos/MetaCubeX/mihomo/releases/latest"
+          with urllib.request.urlopen(api_url, timeout=60) as response:
+              release = json.load(response)
+
+          asset = next(
+              (
+                  item
+                  for item in release["assets"]
+                  if item["name"].startswith("mihomo-linux-amd64-compatible-")
+                  and item["name"].endswith(".gz")
+              ),
+              None,
+          )
+          if asset is None:
+              raise SystemExit("未找到 Linux amd64 compatible 的 Mihomo 发行包")
+
+          urllib.request.urlretrieve(asset["browser_download_url"], "mihomo.gz")
+          with gzip.open("mihomo.gz", "rb") as source, open("mihomo", "wb") as target:
+              shutil.copyfileobj(source, target)
+
+          os.chmod("mihomo", os.stat("mihomo").st_mode | stat.S_IEXEC)
+          PY
+
+      - name: Build TXT And MRS
+        run: python main.py --config config.yaml --mihomo-binary ./mihomo
+
+      - name: Publish Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="rules-$(date -u +'%Y%m%d-%H%M%S')-${GITHUB_RUN_NUMBER}"
+          TITLE="Rules ${TAG}"
+          NOTES_FILE="$(mktemp)"
+          {
+            echo "Automated rule build."
+            echo
+            echo "- Source commit: ${GITHUB_SHA}"
+            echo "- Workflow run: ${GITHUB_RUN_ID}"
+            echo "- Generated at (UTC): $(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+          } > "${NOTES_FILE}"
+          gh release create "${TAG}" \
+            rules/ads.txt \
+            rules/ads.mrs \
+            rules/metadata.json \
+            --title "${TITLE}" \
+            --notes-file "${NOTES_FILE}" \
+            --latest
