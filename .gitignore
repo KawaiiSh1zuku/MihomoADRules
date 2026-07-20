@@ -1,4 +1,5 @@
 .idea
+.agents
 __pycache__/
 mihomo
 mihomo.gz

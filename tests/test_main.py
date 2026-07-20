@@ -1,6 +1,11 @@
 import unittest
 
-from main import apply_whitelist, normalize_payload_entry, parse_adguard_line
+from main import (
+    apply_whitelist,
+    normalize_payload_entry,
+    parse_adguard_line,
+    should_record_skip_sample,
+)
 
 
 class ParseAdguardLineTests(unittest.TestCase):
@@ -55,6 +60,16 @@ class NormalizePayloadEntryTests(unittest.TestCase):
 
     def test_skip_domain_keyword_rule(self) -> None:
         self.assertIsNone(normalize_payload_entry("DOMAIN-KEYWORD,ads"))
+
+
+class SkipSampleTests(unittest.TestCase):
+    def test_skip_comment_and_metadata_lines(self) -> None:
+        self.assertFalse(should_record_skip_sample("[Adblock Plus 2.0]"))
+        self.assertFalse(should_record_skip_sample("! Version: 202607201012"))
+
+    def test_keep_meaningful_skipped_rule_lines(self) -> None:
+        self.assertTrue(should_record_skip_sample("||example.com/z.js"))
+        self.assertTrue(should_record_skip_sample("||example.com^$third-party"))
 
 
 class ApplyWhitelistTests(unittest.TestCase):

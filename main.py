@@ -172,6 +172,15 @@ def parse_adguard_line(line: str) -> str | None:
     return None
 
 
+def should_record_skip_sample(line: str) -> bool:
+    stripped = line.strip()
+    if not stripped:
+        return False
+    if stripped.startswith(COMMENT_PREFIXES) or stripped.startswith("#"):
+        return False
+    return True
+
+
 def normalize_payload_entry(entry: str) -> str | None:
     value = entry.strip().strip("\"'")
     if not value or value.startswith("#"):
@@ -397,7 +406,8 @@ def collect_rules(config_path: Path, whitelist_path: Path) -> tuple[dict, list[s
                     stripped = raw_line.strip()
                     if stripped:
                         stat.skipped_lines += 1
-                        stat.remember_skip(stripped)
+                        if should_record_skip_sample(stripped):
+                            stat.remember_skip(stripped)
         else:
             try:
                 parsed_rules = parse_clash_yaml_text(text)
