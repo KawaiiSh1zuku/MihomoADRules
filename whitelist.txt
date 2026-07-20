@@ -2,3 +2,5 @@
 # Supported forms:
 # DOMAIN-SUFFIX,example.com
 # DOMAIN,foo.example.com
+# +.example.com
+# foo.example.com

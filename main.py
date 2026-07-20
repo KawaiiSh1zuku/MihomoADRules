@@ -117,7 +117,7 @@ def normalize_suffix_candidate(candidate: str) -> str | None:
         return None
     if not trimmed:
         return None
-    return f"DOMAIN-SUFFIX,{trimmed}"
+    return f"+.{trimmed}"
 
 
 def normalize_exact_candidate(candidate: str) -> str | None:
@@ -126,7 +126,7 @@ def normalize_exact_candidate(candidate: str) -> str | None:
     trimmed = candidate.lower().strip(".").strip()
     if not trimmed or "*" in trimmed:
         return None
-    return f"DOMAIN,{trimmed}"
+    return trimmed
 
 
 def parse_adguard_line(line: str) -> str | None:
@@ -207,22 +207,23 @@ def parse_domain_rule(rule: str) -> DomainRule | None:
     normalized = normalize_payload_entry(rule)
     if not normalized:
         return None
-    kind, value = normalized.split(",", 1)
-    return DomainRule(kind=kind, value=value)
+    if normalized.startswith("+."):
+        return DomainRule(kind="suffix", value=normalized[2:])
+    return DomainRule(kind="exact", value=normalized)
 
 
 def rule_matches_host(rule: DomainRule, host: str) -> bool:
-    if rule.kind == "DOMAIN":
+    if rule.kind == "exact":
         return host == rule.value
     return host == rule.value or host.endswith(f".{rule.value}")
 
 
 def rules_intersect(left: DomainRule, right: DomainRule) -> bool:
-    if left.kind == "DOMAIN" and right.kind == "DOMAIN":
+    if left.kind == "exact" and right.kind == "exact":
         return left.value == right.value
-    if left.kind == "DOMAIN":
+    if left.kind == "exact":
         return rule_matches_host(right, left.value)
-    if right.kind == "DOMAIN":
+    if right.kind == "exact":
         return rule_matches_host(left, right.value)
     return (
         left.value == right.value
@@ -423,8 +424,8 @@ def collect_rules(config_path: Path, whitelist_path: Path) -> tuple[dict, list[s
     ordered_rules = sorted(
         merged_rules,
         key=lambda item: (
-            item.split(",", 1)[1] if "," in item else item,
-            0 if item.startswith("DOMAIN,") else 1,
+            item[2:] if item.startswith("+.") else item,
+            0 if not item.startswith("+.") else 1,
             item,
         ),
     )

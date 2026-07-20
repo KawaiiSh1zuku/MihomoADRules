@@ -10,15 +10,15 @@ from main import (
 
 class ParseAdguardLineTests(unittest.TestCase):
     def test_parse_standard_suffix_rule(self) -> None:
-        self.assertEqual(parse_adguard_line("||8le8le.com^"), "DOMAIN-SUFFIX,8le8le.com")
+        self.assertEqual(parse_adguard_line("||8le8le.com^"), "+.8le8le.com")
 
     def test_parse_wildcard_domain_rule(self) -> None:
-        self.assertEqual(parse_adguard_line("*-ad.sm.cn*"), "DOMAIN-SUFFIX,-ad.sm.cn")
+        self.assertEqual(parse_adguard_line("*-ad.sm.cn*"), "+.-ad.sm.cn")
 
     def test_parse_exact_scheme_rule(self) -> None:
         self.assertEqual(
             parse_adguard_line("|https://img.example.com^"),
-            "DOMAIN,img.example.com",
+            "img.example.com",
         )
 
     def test_skip_exception_and_cosmetic_rules(self) -> None:
@@ -45,17 +45,17 @@ class NormalizePayloadEntryTests(unittest.TestCase):
     def test_normalize_provider_payload_suffix(self) -> None:
         self.assertEqual(
             normalize_payload_entry("+.ads.example.com"),
-            "DOMAIN-SUFFIX,ads.example.com",
+            "+.ads.example.com",
         )
 
     def test_normalize_classical_domain_rules(self) -> None:
         self.assertEqual(
             normalize_payload_entry("DOMAIN-SUFFIX, ads.example.com"),
-            "DOMAIN-SUFFIX,ads.example.com",
+            "+.ads.example.com",
         )
         self.assertEqual(
             normalize_payload_entry("DOMAIN, exact.example.com"),
-            "DOMAIN,exact.example.com",
+            "exact.example.com",
         )
 
     def test_skip_domain_keyword_rule(self) -> None:
@@ -75,25 +75,25 @@ class SkipSampleTests(unittest.TestCase):
 class ApplyWhitelistTests(unittest.TestCase):
     def test_suffix_whitelist_removes_matching_blacklist_rules(self) -> None:
         blacklist = [
-            "DOMAIN-SUFFIX,example.com",
-            "DOMAIN,foo.example.com",
-            "DOMAIN-SUFFIX,foo.example.com",
-            "DOMAIN-SUFFIX,other.com",
+            "+.example.com",
+            "foo.example.com",
+            "+.foo.example.com",
+            "+.other.com",
         ]
         whitelist = ["DOMAIN-SUFFIX,example.com"]
-        self.assertEqual(apply_whitelist(blacklist, whitelist), ["DOMAIN-SUFFIX,other.com"])
+        self.assertEqual(apply_whitelist(blacklist, whitelist), ["+.other.com"])
 
     def test_empty_whitelist_keeps_blacklist(self) -> None:
-        blacklist = ["DOMAIN-SUFFIX,example.com", "DOMAIN,foo.example.com"]
+        blacklist = ["+.example.com", "foo.example.com"]
         self.assertEqual(apply_whitelist(blacklist, []), blacklist)
 
     def test_exact_whitelist_removes_intersecting_parent_suffix(self) -> None:
         blacklist = [
-            "DOMAIN-SUFFIX,example.com",
-            "DOMAIN-SUFFIX,other.com",
+            "+.example.com",
+            "+.other.com",
         ]
         whitelist = ["DOMAIN,foo.example.com"]
-        self.assertEqual(apply_whitelist(blacklist, whitelist), ["DOMAIN-SUFFIX,other.com"])
+        self.assertEqual(apply_whitelist(blacklist, whitelist), ["+.other.com"])
 
 
 if __name__ == "__main__":
