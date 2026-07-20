@@ -1,0 +1,19 @@
+rules:
+  AWAvenue:
+    type: adguard
+    url: https://raw.githubusercontent.com/TG-Twilight/AWAvenue-Ads-Rule/main/AWAvenue-Ads-Rule.txt
+  Easylist:
+    type: adguard
+    url: https://easylist-downloads.adblockplus.org/easylist.txt
+  EasyList China:
+    type: adguard
+    url: https://easylist-downloads.adblockplus.org/easylistchina.txt
+  EasyPrivacy:
+    type: adguard
+    url: https://easylist-downloads.adblockplus.org/easyprivacy.txt
+  CJX's Annoyance List:
+    type: adguard
+    url: https://raw.githubusercontent.com/cjx82630/cjxlist/master/cjx-annoyance.txt
+  Loyalsoldier:
+    type: clash-yaml
+    url: https://fastly.jsdelivr.net/gh/Loyalsoldier/clash-rules@release/reject.txt
