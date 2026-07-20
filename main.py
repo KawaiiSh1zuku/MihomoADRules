@@ -15,6 +15,7 @@ DEFAULT_OUTPUTS = {
     "mrs_path": "rules/ads.mrs",
     "metadata_path": "rules/metadata.json",
 }
+DEFAULT_WHITELIST_PATH = "whitelist.txt"
 SUPPORTED_SOURCE_TYPES = {"adguard", "clash-yaml"}
 COMMENT_PREFIXES = ("!", "[")
 COSMETIC_MARKERS = ("##", "#@#", "#?#", "#$#")
@@ -40,6 +41,12 @@ class SourceStats:
     def remember_skip(self, value: str) -> None:
         if len(self.sample_skips) < 5:
             self.sample_skips.append(value)
+
+
+@dataclass(frozen=True)
+class DomainRule:
+    kind: str
+    value: str
 
 
 def fetch_text(url: str) -> tuple[str, int]:
@@ -187,6 +194,72 @@ def normalize_payload_entry(entry: str) -> str | None:
     return normalize_exact_candidate(value)
 
 
+def parse_domain_rule(rule: str) -> DomainRule | None:
+    normalized = normalize_payload_entry(rule)
+    if not normalized:
+        return None
+    kind, value = normalized.split(",", 1)
+    return DomainRule(kind=kind, value=value)
+
+
+def rule_matches_host(rule: DomainRule, host: str) -> bool:
+    if rule.kind == "DOMAIN":
+        return host == rule.value
+    return host == rule.value or host.endswith(f".{rule.value}")
+
+
+def rules_intersect(left: DomainRule, right: DomainRule) -> bool:
+    if left.kind == "DOMAIN" and right.kind == "DOMAIN":
+        return left.value == right.value
+    if left.kind == "DOMAIN":
+        return rule_matches_host(right, left.value)
+    if right.kind == "DOMAIN":
+        return rule_matches_host(left, right.value)
+    return (
+        left.value == right.value
+        or left.value.endswith(f".{right.value}")
+        or right.value.endswith(f".{left.value}")
+    )
+
+
+def load_whitelist(path: Path) -> tuple[list[str], dict]:
+    if not path.exists():
+        return [], {"path": str(path.as_posix()), "exists": False, "total_rules": 0, "invalid_lines": 0}
+
+    whitelist_rules: set[str] = set()
+    invalid_lines = 0
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        stripped = raw_line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        normalized = normalize_payload_entry(stripped)
+        if normalized:
+            whitelist_rules.add(normalized)
+        else:
+            invalid_lines += 1
+
+    return sorted(whitelist_rules), {
+        "path": str(path.as_posix()),
+        "exists": True,
+        "total_rules": len(whitelist_rules),
+        "invalid_lines": invalid_lines,
+    }
+
+
+def apply_whitelist(blacklist: list[str], whitelist: list[str]) -> list[str]:
+    if not whitelist:
+        return list(blacklist)
+
+    whitelist_rules = [rule for item in whitelist if (rule := parse_domain_rule(item))]
+    filtered: list[str] = []
+    for item in blacklist:
+        black_rule = parse_domain_rule(item)
+        if black_rule and any(rules_intersect(black_rule, white_rule) for white_rule in whitelist_rules):
+            continue
+        filtered.append(item)
+    return filtered
+
+
 def strip_inline_comment(text: str) -> str:
     result: list[str] = []
     in_single = False
@@ -295,7 +368,7 @@ def parse_clash_lines(text: str) -> list[str]:
     return result
 
 
-def collect_rules(config_path: Path) -> tuple[dict, list[str]]:
+def collect_rules(config_path: Path, whitelist_path: Path) -> tuple[dict, list[str]]:
     config = load_config(config_path)
     merged_rules: set[str] = set()
     stats: list[SourceStats] = []
@@ -345,11 +418,19 @@ def collect_rules(config_path: Path) -> tuple[dict, list[str]]:
             item,
         ),
     )
+    whitelist_rules, whitelist_meta = load_whitelist(whitelist_path)
+    filtered_rules = apply_whitelist(ordered_rules, whitelist_rules)
     metadata = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "config_path": str(config_path.as_posix()),
         "output": config["output"],
-        "total_rules": len(ordered_rules),
+        "whitelist": {
+            **whitelist_meta,
+            "applied_rules": len(whitelist_rules),
+            "removed_blacklist_rules": len(ordered_rules) - len(filtered_rules),
+        },
+        "total_rules_before_whitelist": len(ordered_rules),
+        "total_rules": len(filtered_rules),
         "sources": [
             {
                 "name": stat.name,
@@ -364,7 +445,7 @@ def collect_rules(config_path: Path) -> tuple[dict, list[str]]:
             for stat in stats
         ],
     }
-    return metadata, ordered_rules
+    return metadata, filtered_rules
 
 
 def write_outputs(config_path: Path, metadata: dict, rules: list[str]) -> dict[str, Path]:
@@ -399,8 +480,8 @@ def convert_to_mrs(txt_path: Path, mrs_path: Path, mihomo_binary: str | None) ->
     return True
 
 
-def build(config_path: Path, mihomo_binary: str | None) -> int:
-    metadata, rules = collect_rules(config_path)
+def build(config_path: Path, mihomo_binary: str | None, whitelist_path: Path) -> int:
+    metadata, rules = collect_rules(config_path, whitelist_path)
     output_paths = write_outputs(config_path, metadata, rules)
     converted = convert_to_mrs(
         output_paths["txt_path"],
@@ -412,6 +493,8 @@ def build(config_path: Path, mihomo_binary: str | None) -> int:
         "mrs_path": str(output_paths["mrs_path"].as_posix()),
         "metadata_path": str(output_paths["metadata_path"].as_posix()),
         "total_rules": len(rules),
+        "whitelist_path": str(whitelist_path.as_posix()),
+        "whitelist_rules": metadata["whitelist"]["applied_rules"],
         "mrs_converted": converted,
     }
     print(json.dumps(summary, ensure_ascii=False, indent=2))
@@ -426,12 +509,17 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         default=None,
         help="mihomo 可执行文件路径；为空时只生成 txt/metadata，除非 PATH 中存在 mihomo",
     )
+    parser.add_argument(
+        "--whitelist",
+        default=DEFAULT_WHITELIST_PATH,
+        help="白名单文件路径，支持 DOMAIN / DOMAIN-SUFFIX",
+    )
     return parser.parse_args(argv)
 
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv or sys.argv[1:])
-    return build(Path(args.config), args.mihomo_binary)
+    return build(Path(args.config), args.mihomo_binary, Path(args.whitelist))
 
 
 if __name__ == "__main__":

@@ -1,6 +1,6 @@
 import unittest
 
-from main import normalize_payload_entry, parse_adguard_line
+from main import apply_whitelist, normalize_payload_entry, parse_adguard_line
 
 
 class ParseAdguardLineTests(unittest.TestCase):
@@ -55,6 +55,30 @@ class NormalizePayloadEntryTests(unittest.TestCase):
 
     def test_skip_domain_keyword_rule(self) -> None:
         self.assertIsNone(normalize_payload_entry("DOMAIN-KEYWORD,ads"))
+
+
+class ApplyWhitelistTests(unittest.TestCase):
+    def test_suffix_whitelist_removes_matching_blacklist_rules(self) -> None:
+        blacklist = [
+            "DOMAIN-SUFFIX,example.com",
+            "DOMAIN,foo.example.com",
+            "DOMAIN-SUFFIX,foo.example.com",
+            "DOMAIN-SUFFIX,other.com",
+        ]
+        whitelist = ["DOMAIN-SUFFIX,example.com"]
+        self.assertEqual(apply_whitelist(blacklist, whitelist), ["DOMAIN-SUFFIX,other.com"])
+
+    def test_empty_whitelist_keeps_blacklist(self) -> None:
+        blacklist = ["DOMAIN-SUFFIX,example.com", "DOMAIN,foo.example.com"]
+        self.assertEqual(apply_whitelist(blacklist, []), blacklist)
+
+    def test_exact_whitelist_removes_intersecting_parent_suffix(self) -> None:
+        blacklist = [
+            "DOMAIN-SUFFIX,example.com",
+            "DOMAIN-SUFFIX,other.com",
+        ]
+        whitelist = ["DOMAIN,foo.example.com"]
+        self.assertEqual(apply_whitelist(blacklist, whitelist), ["DOMAIN-SUFFIX,other.com"])
 
 
 if __name__ == "__main__":

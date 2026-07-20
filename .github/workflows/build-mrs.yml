@@ -7,6 +7,7 @@ on:
   push:
     paths:
       - config.yaml
+      - whitelist.txt
       - main.py
       - tests/**
       - .github/workflows/build-mrs.yml
