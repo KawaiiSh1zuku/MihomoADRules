@@ -81,7 +81,7 @@ jobs:
           os.chmod("mihomo", os.stat("mihomo").st_mode | stat.S_IEXEC)
           PY
 
-      - name: Build TXT And MRS
+      - name: Build Rules
         run: python main.py --config config.yaml --whitelist whitelist.txt --mihomo-binary ./mihomo
 
       - name: Prepare Publish Directory

@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import argparse
+import ipaddress
 import json
 import shutil
 import subprocess
-import sys
 import urllib.request
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -16,11 +16,12 @@ DEFAULT_OUTPUTS = {
     "metadata_path": "rules/metadata.json",
 }
 DEFAULT_WHITELIST_PATH = "whitelist.txt"
-SUPPORTED_SOURCE_TYPES = {"adguard", "clash-yaml"}
+SUPPORTED_SOURCE_TYPES = {"adguard", "clash-yaml", "hosts"}
 COMMENT_PREFIXES = ("!", "[")
 COSMETIC_MARKERS = ("##", "#@#", "#?#", "#$#")
 SEPARATORS = "^/$:?&="
 HOST_ALLOWED_CHARS = set("abcdefghijklmnopqrstuvwxyz0123456789-*.")
+ADBLOCK_HOSTS_REDIRECT_IPS = {"0.0.0.0", "127.0.0.1", "::1"}
 
 
 @dataclass
@@ -59,28 +60,118 @@ def fetch_text(url: str) -> tuple[str, int]:
     )
     with urllib.request.urlopen(request, timeout=60) as response:
         body = response.read()
-        charset = response.headers.get_content_charset() or "utf-8"
-    return body.decode(charset, errors="replace"), len(body)
+    return body.decode("utf-8", errors="replace"), len(body)
+
+
+def strip_inline_comment(text: str) -> str:
+    result: list[str] = []
+    in_single = False
+    in_double = False
+    for char in text:
+        if char == "'" and not in_double:
+            in_single = not in_single
+        elif char == '"' and not in_single:
+            in_double = not in_double
+        elif char == "#" and not in_single and not in_double:
+            break
+        result.append(char)
+    return "".join(result).rstrip()
+
+
+def unquote_yaml_scalar(value: str) -> str:
+    value = value.strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+        return value[1:-1]
+    return value
+
+
+def parse_simple_mapping_yaml(text: str) -> dict:
+    root: dict = {}
+    stack: list[tuple[int, dict]] = [(-1, root)]
+
+    for line_number, raw_line in enumerate(text.splitlines(), start=1):
+        if not raw_line.strip():
+            continue
+        stripped = raw_line.lstrip(" ")
+        if stripped.startswith("#"):
+            continue
+        indent = len(raw_line) - len(stripped)
+        content = strip_inline_comment(stripped)
+        if not content:
+            continue
+        if ":" not in content:
+            raise ValueError(f"invalid YAML mapping at line {line_number}: {raw_line}")
+        key, raw_value = content.split(":", 1)
+        key = unquote_yaml_scalar(key.strip())
+        value = raw_value.strip()
+
+        while stack and indent <= stack[-1][0]:
+            stack.pop()
+        if not stack:
+            raise ValueError(f"invalid indentation at line {line_number}: {raw_line}")
+        container = stack[-1][1]
+
+        if value:
+            container[key] = unquote_yaml_scalar(value)
+        else:
+            child: dict = {}
+            container[key] = child
+            stack.append((indent, child))
+
+    return root
+
+
+def parse_simple_payload_yaml(text: str) -> list[str]:
+    payload: list[str] = []
+    in_payload = False
+    payload_indent = 0
+
+    for raw_line in text.splitlines():
+        if not raw_line.strip():
+            continue
+        stripped = raw_line.lstrip(" ")
+        if stripped.startswith("#"):
+            continue
+        indent = len(raw_line) - len(stripped)
+        content = strip_inline_comment(stripped)
+        if not content:
+            continue
+
+        if not in_payload:
+            if content == "payload:":
+                in_payload = True
+                payload_indent = indent
+            continue
+
+        if indent <= payload_indent and not content.startswith("- "):
+            break
+        if content.startswith("- "):
+            payload.append(unquote_yaml_scalar(content[2:].strip()))
+
+    if in_payload:
+        return payload
+    raise ValueError("not a payload list YAML")
 
 
 def load_config(path: Path) -> dict:
     data = parse_simple_mapping_yaml(path.read_text(encoding="utf-8"))
     rules = data.get("rules")
     if not isinstance(rules, dict) or not rules:
-        raise ValueError("config.yaml 中必须包含非空的 rules 映射")
+        raise ValueError("config.yaml must contain a non-empty rules mapping")
     outputs = dict(DEFAULT_OUTPUTS)
     raw_outputs = data.get("output") or {}
     if raw_outputs:
         if not isinstance(raw_outputs, dict):
-            raise ValueError("output 必须是 YAML 映射")
-        outputs.update({key: str(value) for key, value in raw_outputs.items() if value})
+            raise ValueError("output must be a YAML mapping")
+        for key, value in raw_outputs.items():
+            if key in outputs and value:
+                outputs[key] = str(value)
     data["output"] = outputs
     return data
 
 
 def split_host_candidate(text: str) -> tuple[str, str]:
     chars: list[str] = []
-    index = 0
     for index, char in enumerate(text):
         if char in SEPARATORS:
             return "".join(chars).strip(), text[index:]
@@ -90,6 +181,14 @@ def split_host_candidate(text: str) -> tuple[str, str]:
 
 def is_pure_domain_rule_remainder(remainder: str) -> bool:
     return remainder in {"", "^"}
+
+
+def is_ip_literal(value: str) -> bool:
+    try:
+        ipaddress.ip_address(value)
+    except ValueError:
+        return False
+    return True
 
 
 def is_host_like(candidate: str) -> bool:
@@ -115,18 +214,44 @@ def normalize_suffix_candidate(candidate: str) -> str | None:
     trimmed = candidate.lower().strip().strip("*").strip(".")
     if not is_host_like(trimmed):
         return None
-    if not trimmed:
-        return None
     return f"+.{trimmed}"
 
 
 def normalize_exact_candidate(candidate: str) -> str | None:
-    if not is_host_like(candidate):
-        return None
     trimmed = candidate.lower().strip(".").strip()
-    if not trimmed or "*" in trimmed:
+    if not trimmed or "*" in trimmed or not is_host_like(trimmed):
         return None
     return trimmed
+
+
+def strip_hosts_comment(line: str) -> str:
+    if "#" not in line:
+        return line.strip()
+    return line.split("#", 1)[0].strip()
+
+
+def parse_hosts_line(line: str, *, adblock_mode: bool = False) -> list[str]:
+    stripped = strip_hosts_comment(line)
+    if not stripped:
+        return []
+    parts = stripped.split()
+    if len(parts) < 2:
+        return []
+
+    ip_token = parts[0]
+    if not is_ip_literal(ip_token):
+        return []
+    if adblock_mode and ip_token not in ADBLOCK_HOSTS_REDIRECT_IPS:
+        return []
+
+    rules: list[str] = []
+    for host in parts[1:]:
+        if is_ip_literal(host):
+            continue
+        normalized = normalize_exact_candidate(host)
+        if normalized:
+            rules.append(normalized)
+    return rules
 
 
 def parse_adguard_line(line: str) -> str | None:
@@ -137,23 +262,29 @@ def parse_adguard_line(line: str) -> str | None:
         return None
     if any(marker in value for marker in COSMETIC_MARKERS):
         return None
+    if value.startswith("/") and value.endswith("/"):
+        return None
+    if value.startswith("#"):
+        return None
     if "$" in value:
         return None
-    value = value.strip()
+
     if value.startswith("||"):
         candidate, remainder = split_host_candidate(value[2:])
         if not is_pure_domain_rule_remainder(remainder):
             return None
         return normalize_suffix_candidate(candidate)
+
     if value.startswith("|http://") or value.startswith("|https://"):
         scheme_index = value.find("://")
         remainder = value[scheme_index + 3 :]
-        candidate, remainder = split_host_candidate(remainder)
-        if not is_pure_domain_rule_remainder(remainder):
+        candidate, tail = split_host_candidate(remainder)
+        if not is_pure_domain_rule_remainder(tail):
             return None
         if "*" in candidate:
             return normalize_suffix_candidate(candidate)
         return normalize_exact_candidate(candidate)
+
     if value.startswith("|"):
         candidate, remainder = split_host_candidate(value[1:])
         if not is_pure_domain_rule_remainder(remainder):
@@ -161,15 +292,24 @@ def parse_adguard_line(line: str) -> str | None:
         if "*" in candidate:
             return normalize_suffix_candidate(candidate)
         return normalize_exact_candidate(candidate)
+
     if value.startswith("/"):
         return None
+
     if "*" in value and not any(separator in value for separator in SEPARATORS):
         candidate, remainder = split_host_candidate(value)
         if remainder:
             return None
-        if candidate:
-            return normalize_suffix_candidate(candidate)
+        return normalize_suffix_candidate(candidate)
+
     return None
+
+
+def parse_adguard_rules(line: str) -> list[str]:
+    normalized = parse_adguard_line(line)
+    if normalized:
+        return [normalized]
+    return []
 
 
 def should_record_skip_sample(line: str) -> bool:
@@ -270,96 +410,6 @@ def apply_whitelist(blacklist: list[str], whitelist: list[str]) -> list[str]:
     return filtered
 
 
-def strip_inline_comment(text: str) -> str:
-    result: list[str] = []
-    in_single = False
-    in_double = False
-    for char in text:
-        if char == "'" and not in_double:
-            in_single = not in_single
-        elif char == '"' and not in_single:
-            in_double = not in_double
-        elif char == "#" and not in_single and not in_double:
-            break
-        result.append(char)
-    return "".join(result).rstrip()
-
-
-def unquote_yaml_scalar(value: str) -> str:
-    value = value.strip()
-    if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
-        return value[1:-1]
-    return value
-
-
-def parse_simple_mapping_yaml(text: str) -> dict:
-    root: dict = {}
-    stack: list[tuple[int, dict]] = [(-1, root)]
-
-    for line_number, raw_line in enumerate(text.splitlines(), start=1):
-        if not raw_line.strip():
-            continue
-        stripped = raw_line.lstrip(" ")
-        if stripped.startswith("#"):
-            continue
-        indent = len(raw_line) - len(stripped)
-        content = strip_inline_comment(stripped)
-        if not content:
-            continue
-        if ":" not in content:
-            raise ValueError(f"第 {line_number} 行不是有效的 YAML 映射项: {raw_line}")
-        key, raw_value = content.split(":", 1)
-        key = unquote_yaml_scalar(key.strip())
-        value = raw_value.strip()
-
-        while stack and indent <= stack[-1][0]:
-            stack.pop()
-        if not stack:
-            raise ValueError(f"第 {line_number} 行缩进不合法: {raw_line}")
-        container = stack[-1][1]
-
-        if value:
-            container[key] = unquote_yaml_scalar(value)
-        else:
-            child: dict = {}
-            container[key] = child
-            stack.append((indent, child))
-
-    return root
-
-
-def parse_simple_payload_yaml(text: str) -> list[str]:
-    payload: list[str] = []
-    in_payload = False
-    payload_indent = 0
-
-    for raw_line in text.splitlines():
-        if not raw_line.strip():
-            continue
-        stripped = raw_line.lstrip(" ")
-        if stripped.startswith("#"):
-            continue
-        indent = len(raw_line) - len(stripped)
-        content = strip_inline_comment(stripped)
-        if not content:
-            continue
-
-        if not in_payload:
-            if content == "payload:":
-                in_payload = True
-                payload_indent = indent
-            continue
-
-        if indent <= payload_indent and not content.startswith("- "):
-            break
-        if content.startswith("- "):
-            payload.append(unquote_yaml_scalar(content[2:].strip()))
-
-    if in_payload:
-        return payload
-    raise ValueError("不是 payload 列表 YAML")
-
-
 def parse_clash_yaml_text(text: str) -> list[str]:
     result: list[str] = []
     for entry in parse_simple_payload_yaml(text):
@@ -378,6 +428,49 @@ def parse_clash_lines(text: str) -> list[str]:
     return result
 
 
+def collect_source_rules(source_type: str, text: str, stat: SourceStats) -> set[str]:
+    collected: set[str] = set()
+
+    if source_type == "adguard":
+        for raw_line in text.splitlines():
+            normalized_rules = parse_adguard_rules(raw_line)
+            if normalized_rules:
+                for normalized in normalized_rules:
+                    collected.add(normalized)
+                    stat.remember_rule(normalized)
+            else:
+                stripped = raw_line.strip()
+                if stripped:
+                    stat.skipped_lines += 1
+                    if should_record_skip_sample(stripped):
+                        stat.remember_skip(stripped)
+        return collected
+
+    if source_type == "hosts":
+        for raw_line in text.splitlines():
+            normalized_rules = parse_hosts_line(raw_line, adblock_mode=False)
+            if normalized_rules:
+                for normalized in normalized_rules:
+                    collected.add(normalized)
+                    stat.remember_rule(normalized)
+            else:
+                stripped = raw_line.strip()
+                if stripped:
+                    stat.skipped_lines += 1
+                    if should_record_skip_sample(stripped):
+                        stat.remember_skip(stripped)
+        return collected
+
+    try:
+        parsed_rules = parse_clash_yaml_text(text)
+    except Exception:
+        parsed_rules = parse_clash_lines(text)
+    for normalized in parsed_rules:
+        collected.add(normalized)
+        stat.remember_rule(normalized)
+    return collected
+
+
 def collect_rules(config_path: Path, whitelist_path: Path) -> tuple[dict, list[str]]:
     config = load_config(config_path)
     merged_rules: set[str] = set()
@@ -385,39 +478,18 @@ def collect_rules(config_path: Path, whitelist_path: Path) -> tuple[dict, list[s
 
     for name, source in config["rules"].items():
         if not isinstance(source, dict):
-            raise ValueError(f"规则源 {name} 必须是 YAML 映射")
+            raise ValueError(f"rule source {name} must be a YAML mapping")
         source_type = str(source.get("type", "")).strip()
         source_url = str(source.get("url", "")).strip()
         if source_type not in SUPPORTED_SOURCE_TYPES:
-            raise ValueError(f"规则源 {name} 的 type 不支持: {source_type}")
+            raise ValueError(f"unsupported source type for {name}: {source_type}")
         if not source_url:
-            raise ValueError(f"规则源 {name} 缺少 url")
+            raise ValueError(f"rule source {name} is missing url")
 
         stat = SourceStats(name=name, type=source_type, url=source_url)
         text, stat.fetched_bytes = fetch_text(source_url)
         before = len(merged_rules)
-
-        if source_type == "adguard":
-            for raw_line in text.splitlines():
-                normalized = parse_adguard_line(raw_line)
-                if normalized:
-                    merged_rules.add(normalized)
-                    stat.remember_rule(normalized)
-                else:
-                    stripped = raw_line.strip()
-                    if stripped:
-                        stat.skipped_lines += 1
-                        if should_record_skip_sample(stripped):
-                            stat.remember_skip(stripped)
-        else:
-            try:
-                parsed_rules = parse_clash_yaml_text(text)
-            except Exception:
-                parsed_rules = parse_clash_lines(text)
-            for normalized in parsed_rules:
-                merged_rules.add(normalized)
-                stat.remember_rule(normalized)
-
+        merged_rules.update(collect_source_rules(source_type, text, stat))
         stat.added_rules = len(merged_rules) - before
         stats.append(stat)
 
@@ -431,10 +503,10 @@ def collect_rules(config_path: Path, whitelist_path: Path) -> tuple[dict, list[s
     )
     whitelist_rules, whitelist_meta = load_whitelist(whitelist_path)
     filtered_rules = apply_whitelist(ordered_rules, whitelist_rules)
+
     metadata = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "config_path": str(config_path.as_posix()),
-        "output": config["output"],
         "whitelist": {
             **whitelist_meta,
             "applied_rules": len(whitelist_rules),
@@ -469,10 +541,7 @@ def write_outputs(config_path: Path, metadata: dict, rules: list[str]) -> dict[s
         path.parent.mkdir(parents=True, exist_ok=True)
 
     txt_path.write_text("\n".join(rules) + "\n", encoding="utf-8")
-    metadata_path.write_text(
-        json.dumps(metadata, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
+    metadata_path.write_text(json.dumps(metadata, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return {
         "txt_path": txt_path,
         "mrs_path": mrs_path,
@@ -494,11 +563,7 @@ def convert_to_mrs(txt_path: Path, mrs_path: Path, mihomo_binary: str | None) ->
 def build(config_path: Path, mihomo_binary: str | None, whitelist_path: Path) -> int:
     metadata, rules = collect_rules(config_path, whitelist_path)
     output_paths = write_outputs(config_path, metadata, rules)
-    converted = convert_to_mrs(
-        output_paths["txt_path"],
-        output_paths["mrs_path"],
-        mihomo_binary,
-    )
+    converted = convert_to_mrs(output_paths["txt_path"], output_paths["mrs_path"], mihomo_binary)
     summary = {
         "txt_path": str(output_paths["txt_path"].as_posix()),
         "mrs_path": str(output_paths["mrs_path"].as_posix()),
@@ -506,30 +571,31 @@ def build(config_path: Path, mihomo_binary: str | None, whitelist_path: Path) ->
         "total_rules": len(rules),
         "whitelist_path": str(whitelist_path.as_posix()),
         "whitelist_rules": metadata["whitelist"]["applied_rules"],
+        "sources": {item["name"]: item["added_rules"] for item in metadata["sources"]},
         "mrs_converted": converted,
     }
     print(json.dumps(summary, ensure_ascii=False, indent=2))
     return 0
 
 
-def parse_args(argv: list[str]) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="构建 Mihomo 文本规则与 MRS 二进制")
-    parser.add_argument("--config", default="config.yaml", help="配置文件路径")
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Build Mihomo MRS rules from adguard/clash-yaml/hosts sources")
+    parser.add_argument("--config", default="config.yaml", help="config file path")
     parser.add_argument(
         "--mihomo-binary",
         default=None,
-        help="mihomo 可执行文件路径；为空时只生成 txt/metadata，除非 PATH 中存在 mihomo",
+        help="mihomo executable path; if omitted, mrs is generated only when mihomo exists in PATH",
     )
     parser.add_argument(
         "--whitelist",
         default=DEFAULT_WHITELIST_PATH,
-        help="白名单文件路径，支持 DOMAIN / DOMAIN-SUFFIX",
+        help="whitelist file path; supports DOMAIN / DOMAIN-SUFFIX / +.domain / domain",
     )
     return parser.parse_args(argv)
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = parse_args(argv or sys.argv[1:])
+    args = parse_args(argv)
     return build(Path(args.config), args.mihomo_binary, Path(args.whitelist))
 
 

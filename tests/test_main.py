@@ -4,6 +4,7 @@ from main import (
     apply_whitelist,
     normalize_payload_entry,
     parse_adguard_line,
+    parse_hosts_line,
     should_record_skip_sample,
 )
 
@@ -40,6 +41,9 @@ class ParseAdguardLineTests(unittest.TestCase):
         self.assertIsNone(parse_adguard_line("||example.com^$third-party"))
         self.assertIsNone(parse_adguard_line("||example.com^$domain=foo.com"))
 
+    def test_adguard_does_not_treat_hosts_format_as_adguard(self) -> None:
+        self.assertIsNone(parse_adguard_line("0.0.0.0 ads.example.com"))
+
 
 class NormalizePayloadEntryTests(unittest.TestCase):
     def test_normalize_provider_payload_suffix(self) -> None:
@@ -70,6 +74,17 @@ class SkipSampleTests(unittest.TestCase):
     def test_keep_meaningful_skipped_rule_lines(self) -> None:
         self.assertTrue(should_record_skip_sample("||example.com/z.js"))
         self.assertTrue(should_record_skip_sample("||example.com^$third-party"))
+
+
+class HostsTests(unittest.TestCase):
+    def test_parse_hosts_line_multiple_hosts(self) -> None:
+        self.assertEqual(
+            parse_hosts_line("0.0.0.0 ads.example.com stats.example.com # comment"),
+            ["ads.example.com", "stats.example.com"],
+        )
+
+    def test_parse_hosts_line_skips_non_ip_prefix(self) -> None:
+        self.assertEqual(parse_hosts_line("localhost ads.example.com"), [])
 
 
 class ApplyWhitelistTests(unittest.TestCase):
