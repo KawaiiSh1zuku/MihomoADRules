@@ -3,14 +3,12 @@ name: Build Mihomo Rules
 on:
   workflow_dispatch:
   schedule:
-    - cron: "17 2 * * *"
+    - cron: "0 23 * * *"
   push:
-    paths:
-      - config.yaml
-      - whitelist.txt
-      - main.py
-      - tests/**
-      - .github/workflows/build-mrs.yml
+    branches:
+      - main
+    paths-ignore:
+      - "**/README.md"
 
 permissions:
   contents: write
@@ -22,15 +20,30 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      SOURCE_BRANCH: main
+      RELEASE_BRANCH: release
+      PUBLISH_DIR: publish
 
     steps:
-      - name: Checkout
+      - name: Set Variables
+        run: |
+          echo "RELEASE_NAME=Rules released on $(date -u +'%Y-%m-%d %H:%M:%S UTC')" >> "${GITHUB_ENV}"
+          echo "TAG_NAME=rules-$(date -u +'%Y%m%d-%H%M%S')-${GITHUB_RUN_NUMBER}" >> "${GITHUB_ENV}"
+
+      - name: Checkout Source Branch
         uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SOURCE_BRANCH }}
+          fetch-depth: 0
 
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+
+      - name: Capture Source Commit
+        run: echo "SOURCE_COMMIT=$(git rev-parse HEAD)" >> "${GITHUB_ENV}"
 
       - name: Run Tests
         run: python -m unittest discover -s tests -v
@@ -59,7 +72,7 @@ jobs:
               None,
           )
           if asset is None:
-              raise SystemExit("未找到 Linux amd64 compatible 的 Mihomo 发行包")
+              raise SystemExit("failed to locate Linux amd64 compatible Mihomo release asset")
 
           urllib.request.urlretrieve(asset["browser_download_url"], "mihomo.gz")
           with gzip.open("mihomo.gz", "rb") as source, open("mihomo", "wb") as target:
@@ -69,26 +82,54 @@ jobs:
           PY
 
       - name: Build TXT And MRS
-        run: python main.py --config config.yaml --mihomo-binary ./mihomo
+        run: python main.py --config config.yaml --whitelist whitelist.txt --mihomo-binary ./mihomo
+
+      - name: Prepare Publish Directory
+        run: |
+          mkdir -p "${PUBLISH_DIR}"
+          cp rules/ads.txt "${PUBLISH_DIR}/ads.txt"
+          cp rules/ads.mrs "${PUBLISH_DIR}/ads.mrs"
+          cp rules/metadata.json "${PUBLISH_DIR}/metadata.json"
+          touch "${PUBLISH_DIR}/.nojekyll"
 
       - name: Publish Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          TAG="rules-$(date -u +'%Y%m%d-%H%M%S')-${GITHUB_RUN_NUMBER}"
-          TITLE="Rules ${TAG}"
           NOTES_FILE="$(mktemp)"
           {
             echo "Automated rule build."
             echo
-            echo "- Source commit: ${GITHUB_SHA}"
+            echo "- Source branch: ${SOURCE_BRANCH}"
+            echo "- Source commit: ${SOURCE_COMMIT}"
             echo "- Workflow run: ${GITHUB_RUN_ID}"
             echo "- Generated at (UTC): $(date -u +'%Y-%m-%dT%H:%M:%SZ')"
           } > "${NOTES_FILE}"
-          gh release create "${TAG}" \
-            rules/ads.txt \
-            rules/ads.mrs \
-            rules/metadata.json \
-            --title "${TITLE}" \
+          gh release create "${TAG_NAME}" \
+            "${PUBLISH_DIR}/ads.txt" \
+            "${PUBLISH_DIR}/ads.mrs" \
+            "${PUBLISH_DIR}/metadata.json" \
+            --title "${RELEASE_NAME}" \
             --notes-file "${NOTES_FILE}" \
             --latest
+
+      - name: Push Assets To Release Branch
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cd "${PUBLISH_DIR}" || exit 1
+          git init
+          git config --local user.name "github-actions[bot]"
+          git config --local user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "${RELEASE_BRANCH}"
+          git add .
+          git commit --allow-empty -m "${RELEASE_NAME}"
+          git remote add origin "https://${{ github.actor }}:${GITHUB_TOKEN}@github.com/${{ github.repository }}"
+          git push -f origin "${RELEASE_BRANCH}"
+
+      - name: Purge jsDelivr CDN
+        run: |
+          cd "${PUBLISH_DIR}" || exit 1
+          for file in $(ls); do
+            curl -fsS "https://purge.jsdelivr.net/gh/${{ github.repository }}@${RELEASE_BRANCH}/${file}" >/dev/null
+          done
