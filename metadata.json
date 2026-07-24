@@ -1,0 +1,136 @@
+{
+  "generated_at": "2026-07-24T00:05:52.676022+00:00",
+  "config_path": "config.yaml",
+  "whitelist": {
+    "path": "whitelist.txt",
+    "exists": true,
+    "total_rules": 0,
+    "invalid_lines": 0,
+    "applied_rules": 0,
+    "removed_blacklist_rules": 0
+  },
+  "total_rules_before_whitelist": 184988,
+  "total_rules": 184988,
+  "sources": [
+    {
+      "name": "AWAvenue",
+      "type": "adguard",
+      "url": "https://raw.githubusercontent.com/TG-Twilight/AWAvenue-Ads-Rule/main/AWAvenue-Ads-Rule.txt",
+      "fetched_bytes": 21693,
+      "added_rules": 902,
+      "skipped_lines": 8,
+      "sample_rules": [
+        "+.1500020991.vodplayer.wxamedia.com",
+        "+.1500022744.vodplayer.wxamedia.com",
+        "+.1500026601.vodplayer.wxamedia.com",
+        "+.8le8le.com",
+        "+.8rn1y79f02-1.algolianet.com"
+      ],
+      "sample_skips": []
+    },
+    {
+      "name": "Easylist",
+      "type": "adguard",
+      "url": "https://easylist-downloads.adblockplus.org/easylist.txt",
+      "fetched_bytes": 2173186,
+      "added_rules": 49115,
+      "skipped_lines": 33898,
+      "sample_rules": [
+        "+.000491b06a.com",
+        "+.0017c6c37c.com",
+        "+.0019x.com",
+        "+.00427011ae.com",
+        "+.00609c257b.com"
+      ],
+      "sample_skips": [
+        "&rb=&uuid=$third-party",
+        "&subaffid=%$subdocument,third-party",
+        "-ad-manager/$~stylesheet",
+        "-ad-sidebar.$image",
+        "-ad.jpg.pagespeed.$image"
+      ]
+    },
+    {
+      "name": "EasyList China",
+      "type": "adguard",
+      "url": "https://easylist-downloads.adblockplus.org/easylistchina.txt",
+      "fetched_bytes": 551214,
+      "added_rules": 5752,
+      "skipped_lines": 13581,
+      "sample_rules": [
+        "+.hash.trafficmanager.net",
+        "+.51tongji.trafficmanager.net",
+        "+.cnzz.trafficmanager.net",
+        "+.trammel74.top",
+        "+.gownbea.icu"
+      ],
+      "sample_skips": [
+        "-*-*-*-*.alpha^$script,third-party",
+        "/7755com-*00x*.gif",
+        ":866/o.js$script,third-party",
+        "/phoenix-share/js/code.123.bg.",
+        ".com/co/$domain=1anime.me"
+      ]
+    },
+    {
+      "name": "EasyPrivacy",
+      "type": "adguard",
+      "url": "https://easylist-downloads.adblockplus.org/easyprivacy.txt",
+      "fetched_bytes": 1433980,
+      "added_rules": 40457,
+      "skipped_lines": 13499,
+      "sample_rules": [
+        "+.adservice.google",
+        "+.00px.net",
+        "+.18wosx.ru",
+        "+.1bliq.io",
+        "+.26sgmin39.de"
+      ],
+      "sample_skips": [
+        "&&sub19=undefined&sub20=undefined",
+        "&action=js_stats",
+        "&ev=PageView&",
+        "&event_name=view_item_list&",
+        "&EventType=DataDealImpression&"
+      ]
+    },
+    {
+      "name": "CJX's Annoyance List",
+      "type": "adguard",
+      "url": "https://raw.githubusercontent.com/cjx82630/cjxlist/master/cjx-annoyance.txt",
+      "fetched_bytes": 57183,
+      "added_rules": 112,
+      "skipped_lines": 1747,
+      "sample_rules": [
+        "+.cir-smart.baidu.com",
+        "+.bjmantis.net",
+        "+.crs.baidu.com",
+        "+.goutong.baidu.com",
+        "+.ad.qn.img-space.com"
+      ],
+      "sample_skips": [
+        "/wiseatom/banner/pack_",
+        "/npm/disable-devtool",
+        "/bbs/include/javascript/adblock.",
+        "/template/bingfeng/statics/js/pingbi.js",
+        "-bobo_recommend_"
+      ]
+    },
+    {
+      "name": "Loyalsoldier",
+      "type": "clash-yaml",
+      "url": "https://fastly.jsdelivr.net/gh/Loyalsoldier/clash-rules@release/reject.txt",
+      "fetched_bytes": 4805256,
+      "added_rules": 88650,
+      "skipped_lines": 0,
+      "sample_rules": [
+        "+.0.avmarket.rs",
+        "+.0.myikas.com",
+        "+.0.net.easyjet.com",
+        "+.0.nextyourcontent.com",
+        "+.0.www.0ul1wlo58s-vu69us-r1u.xyz"
+      ],
+      "sample_skips": []
+    }
+  ]
+}
